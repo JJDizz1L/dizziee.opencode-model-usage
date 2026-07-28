@@ -5,6 +5,8 @@ OpenCode token usage stats in the Omarchy bar. Displays today, weekly, and all-t
 ## Requirements
 
 - Python 3
+- OpenCode (offical) https://github.com/anomalyco/opencode
+  - Arch: $`pacman -S opencode`
 - OpenCode with existing session data in `~/.local/share/opencode/opencode.db`
 
 ## Installation
@@ -14,6 +16,7 @@ omarchy plugin add https://github.com/JJDizz1L/dizziee.opencode-model-usage.git 
 ```
 
 Then place it in your bar layout with `omarchy bar plugin add dizziee.opencode-model-usage [--section <left|center|right>]`.
+Suggested placement: `omarchy bar plugin add dizziee.opencode-model-usage --section left`
 
 You can validate the plugin at any time with:
 
@@ -22,6 +25,7 @@ omarchy plugin validate ~/.config/omarchy/plugins/dizziee.opencode-model-usage
 ```
 
 ## Configuration
+Configuration lives in `~/.config/omarchy/shell.json`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
