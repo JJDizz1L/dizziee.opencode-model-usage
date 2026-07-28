@@ -15,8 +15,13 @@ OpenCode token usage stats in the Omarchy bar. Displays today, weekly, and all-t
 omarchy plugin add https://github.com/JJDizz1L/dizziee.opencode-model-usage.git --enable
 ```
 
-Then place it in your bar layout with `omarchy bar plugin add dizziee.opencode-model-usage [--section <left|center|right>]`.
-Suggested placement: `omarchy bar plugin add dizziee.opencode-model-usage --section left`
+### Then place it in your bar layout with 
+`omarchy bar plugin add dizziee.opencode-model-usage [--section <left|center|right>]`</br>
+
+Suggested placement: 
+```
+omarchy bar plugin add dizziee.opencode-model-usage --section left
+```
 
 You can validate the plugin at any time with:
 
