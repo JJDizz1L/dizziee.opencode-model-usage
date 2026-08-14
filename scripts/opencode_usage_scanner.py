@@ -57,7 +57,7 @@ def scan(db_path: Path) -> dict[str, Any]:
 
     try:
         conn = sqlite3.connect(
-            f"file:{db_path}?mode=ro&immutable=1", uri=True, timeout=5
+            f"file:{db_path}?mode=ro", uri=True, timeout=5
         )
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -139,8 +139,8 @@ def scan(db_path: Path) -> dict[str, Any]:
         cursor.execute(f"""
             SELECT
                 CASE
-                    WHEN time_created>{SEC_MS_THRESHOLD} THEN date(time_created/1000,'unixepoch')
-                    ELSE date(time_created,'unixepoch')
+                    WHEN time_created>{SEC_MS_THRESHOLD} THEN date(time_created/1000,'unixepoch','localtime')
+                    ELSE date(time_created,'unixepoch','localtime')
                 END AS day,
                 SUM(COALESCE(tokens_input,0)+COALESCE(tokens_output,0)
                     +COALESCE(tokens_reasoning,0)+COALESCE(tokens_cache_read,0)
