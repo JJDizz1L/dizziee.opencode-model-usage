@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dizziee.opencode-model-usage",
   "name": "OpenCode Usage",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Dizziee",
   "license": "MIT",
   "description": "OpenCode usage stats in the Omarchy bar.",
