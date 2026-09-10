@@ -29,6 +29,14 @@ You can validate the plugin at any time with:
 omarchy plugin validate ~/.config/omarchy/plugins/dizziee.opencode-model-usage
 ```
 
+## Updating
+
+To pull the latest version of the plugin:
+
+```sh
+omarchy plugin update dizziee.opencode-model-usage --yes
+```
+
 ## Configuration
 Configuration lives in `~/.config/omarchy/shell.json`.
 
