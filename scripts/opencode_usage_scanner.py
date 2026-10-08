@@ -24,15 +24,13 @@ def date_string(value: dt.date) -> str:
     return value.strftime("%Y-%m-%d")
 
 
-def recent_date_strings() -> list[str]:
-    today = dt.datetime.now().date()
+def recent_date_strings(now: dt.datetime) -> list[str]:
+    today = now.date()
     return [date_string(today - dt.timedelta(days=offset)) for offset in range(6, -1, -1)]
 
 
-def unix_epoch_start(date: dt.date) -> int:
-    return int(
-        dt.datetime.combine(date, dt.time.min, tzinfo=dt.timezone.utc).timestamp()
-    )
+def local_midnight_epoch(date: dt.date) -> int:
+    return int(dt.datetime.combine(date, dt.time.min).astimezone().timestamp())
 
 
 def normalize_model(raw_model: Any) -> str:
@@ -47,24 +45,50 @@ def normalize_model(raw_model: Any) -> str:
     return str(raw_model or "unknown")
 
 
-def scan(db_path: Path) -> dict[str, Any]:
-    today_date = dt.datetime.now().date()
-    recent_dates = recent_date_strings()
-    recent = {day: {"date": day, "messageCount": 0} for day in recent_dates}
+def session_source(conn: sqlite3.Connection) -> str:
+    """Sessions from V2 and/or V1 tables, each session counted once.
+
+    V2 is a superset of V1 after migration; installs that have not migrated
+    may still hold sessions only in V1, or an empty V2 table.
+    """
+    names = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('session', 'session_v2')"
+        )
+    }
+    columns = (
+        "id, model, tokens_input, tokens_output, tokens_reasoning,"
+        " tokens_cache_read, tokens_cache_write, time_created"
+    )
+    if "session_v2" in names and "session" in names:
+        return (
+            f"SELECT {columns} FROM session_v2 UNION ALL "
+            f"SELECT {columns} FROM session WHERE id NOT IN (SELECT id FROM session_v2)"
+        )
+    return f"SELECT {columns} FROM {'session_v2' if 'session_v2' in names else 'session'}"
+
+
+def scan(db_path: Path, now: dt.datetime | None = None) -> dict[str, Any]:
+    now = now or dt.datetime.now()
+    today_date = now.date()
+    recent_dates = recent_date_strings(now)
+    recent = {day: {"date": day, "totalTokens": 0} for day in recent_dates}
 
     if not db_path.exists():
         return empty_result()
 
     try:
         conn = sqlite3.connect(
-            f"file:{db_path}?mode=ro", uri=True, timeout=5
+            f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5
         )
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        source = session_source(conn)
 
-        today_start_s = unix_epoch_start(today_date)
-        week_ago_date = today_date - dt.timedelta(days=6)
-        week_ago_s = unix_epoch_start(week_ago_date)
+        today_start_s = local_midnight_epoch(today_date)
+        today_end_s = local_midnight_epoch(today_date + dt.timedelta(days=1))
+        week_ago_s = local_midnight_epoch(today_date - dt.timedelta(days=6))
 
         token_filter = (
             "COALESCE(tokens_input,0)+COALESCE(tokens_output,0)"
@@ -79,19 +103,16 @@ def scan(db_path: Path) -> dict[str, Any]:
                    SUM(COALESCE(tokens_output,0)) AS outputTokens,
                    SUM(COALESCE(tokens_cache_read,0)) AS cacheReadInputTokens,
                    SUM(COALESCE(tokens_cache_write,0)) AS cacheCreationInputTokens,
-                   COUNT(*) AS totalPrompts,
                    COUNT(DISTINCT id) AS totalSessions
-            FROM session
+            FROM ({source})
             WHERE time_created>0 AND ({token_filter})
             GROUP BY model
         """)
 
         model_usage: dict[str, dict[str, int]] = {}
-        total_prompts = 0
         total_sessions = 0
         for row in cursor:
             model = normalize_model(row["model"])
-            total_prompts += row["totalPrompts"]
             total_sessions += row["totalSessions"]
             bucket = model_usage.get(model)
             if bucket is None:
@@ -108,15 +129,13 @@ def scan(db_path: Path) -> dict[str, Any]:
                 bucket["cacheCreationInputTokens"] += row["cacheCreationInputTokens"]
 
         # ---- Today: per-model tokens ----
-        today_end_s = today_start_s + 86400
         cursor.execute(f"""
             SELECT model,
                    SUM(COALESCE(tokens_input,0)+COALESCE(tokens_output,0)
                        +COALESCE(tokens_reasoning,0)+COALESCE(tokens_cache_read,0)
                        +COALESCE(tokens_cache_write,0)) AS totalTokens,
-                   COUNT(*) AS prompts,
                    COUNT(DISTINCT id) AS sessions
-            FROM session
+            FROM ({source})
             WHERE time_created>0 AND ({token_filter})
               AND (CASE WHEN time_created>{SEC_MS_THRESHOLD} THEN time_created/1000 ELSE time_created END)>=?
               AND (CASE WHEN time_created>{SEC_MS_THRESHOLD} THEN time_created/1000 ELSE time_created END)<? 
@@ -124,13 +143,11 @@ def scan(db_path: Path) -> dict[str, Any]:
         """, (today_start_s, today_end_s))
 
         today_tokens_by_model: dict[str, int] = {}
-        today_prompts = 0
         today_total_tokens = 0
         today_sessions = 0
         for row in cursor:
             model = normalize_model(row["model"])
             row_tokens = row["totalTokens"]
-            today_prompts += row["prompts"]
             today_sessions += row["sessions"]
             today_total_tokens += row_tokens
             today_tokens_by_model[model] = today_tokens_by_model.get(model, 0) + row_tokens
@@ -145,7 +162,7 @@ def scan(db_path: Path) -> dict[str, Any]:
                 SUM(COALESCE(tokens_input,0)+COALESCE(tokens_output,0)
                     +COALESCE(tokens_reasoning,0)+COALESCE(tokens_cache_read,0)
                     +COALESCE(tokens_cache_write,0)) AS totalTokens
-            FROM session
+            FROM ({source})
             WHERE time_created>0 AND ({token_filter})
               AND (CASE WHEN time_created>{SEC_MS_THRESHOLD} THEN time_created/1000 ELSE time_created END)>=?
             GROUP BY day
@@ -155,7 +172,7 @@ def scan(db_path: Path) -> dict[str, Any]:
         for row in cursor:
             day = row["day"]
             if day in recent:
-                recent[day]["messageCount"] = row["totalTokens"]
+                recent[day]["totalTokens"] = row["totalTokens"]
 
         conn.close()
     except Exception as exc:
@@ -164,30 +181,26 @@ def scan(db_path: Path) -> dict[str, Any]:
 
     return {
         "schemaVersion": 1,
-        "todayPrompts": today_prompts,
         "todaySessions": today_sessions,
         "todayTotalTokens": today_total_tokens,
         "todayTokensByModel": today_tokens_by_model,
         "recentDays": [recent[day] for day in recent_dates],
         "modelUsage": model_usage,
-        "totalPrompts": total_prompts,
         "totalSessions": total_sessions,
         "ready": True,
         "hasLocalStats": True,
     }
 
 
-def empty_result() -> dict[str, Any]:
-    recent_dates = recent_date_strings()
+def empty_result(now: dt.datetime | None = None) -> dict[str, Any]:
+    recent_dates = recent_date_strings(now or dt.datetime.now())
     return {
         "schemaVersion": 1,
-        "todayPrompts": 0,
         "todaySessions": 0,
         "todayTotalTokens": 0,
         "todayTokensByModel": {},
-        "recentDays": [{"date": day, "messageCount": 0} for day in recent_dates],
+        "recentDays": [{"date": day, "totalTokens": 0} for day in recent_dates],
         "modelUsage": {},
-        "totalPrompts": 0,
         "totalSessions": 0,
         "ready": True,
         "hasLocalStats": False,
