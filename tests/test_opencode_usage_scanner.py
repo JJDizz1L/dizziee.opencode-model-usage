@@ -196,5 +196,140 @@ class SqlFilterTests(TimezoneTestCase):
         self.assertEqual(result["modelUsage"], {})
 
 
+MSG_V2_SCHEMA = """
+CREATE TABLE session_message (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    time_created INTEGER NOT NULL,
+    time_updated INTEGER NOT NULL,
+    data TEXT NOT NULL
+)
+"""
+
+MSG_V1_SCHEMA = """
+CREATE TABLE message (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    time_created INTEGER NOT NULL,
+    time_updated INTEGER NOT NULL,
+    data TEXT NOT NULL
+)
+"""
+
+
+def v2_data(model_id, provider, tokens):
+    toks = {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}
+    toks.update(tokens)
+    import json as _json
+
+    return _json.dumps({"model": {"id": model_id, "providerID": provider}, "tokens": toks})
+
+
+def v1_data(model_id, provider, tokens):
+    toks = {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}
+    toks.update(tokens)
+    import json as _json
+
+    return _json.dumps({"modelID": model_id, "providerID": provider, "tokens": toks})
+
+
+class MessageDayStatsTests(TimezoneTestCase):
+    def setUp(self):
+        super().setUp()
+        self.conn.executescript(SCHEMA.replace("CREATE TABLE session (", "CREATE TABLE session_v2 (", 1))
+        self.conn.executescript(MSG_V2_SCHEMA)
+        self.conn.commit()
+        self._seq = 0
+
+    def add_v2_session(self, sid, model, tokens, when):
+        self.conn.execute(
+            "INSERT INTO session_v2 (id, model, tokens_input, time_created) VALUES (?, ?, ?, ?)",
+            (sid, model, tokens, when),
+        )
+        self.conn.commit()
+
+    def add_v2_message(self, sid, when, data):
+        self._seq += 1
+        self.conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)"
+            " VALUES (?, ?, 'assistant', ?, ?, ?, ?)",
+            (f"msg-{sid}-{self._seq}", sid, self._seq, when, when, data),
+        )
+        self.conn.commit()
+
+    def test_long_running_session_attributes_tokens_to_activity_day(self):
+        # Session created a month ago but active today: only today's
+        # messages count toward today, each under its own model.
+        self.use_zone("UTC")
+        now = dt.datetime(2026, 10, 8, 12, 0)
+        self.add_v2_session("old", '{"id":"m","providerID":"p"}', 999999, local_ms(2026, 9, 10, 9, 0))
+        self.add_v2_message("old", local_ms(2026, 10, 7, 23, 0), v2_data("a", "pa", {"input": 1000}))
+        self.add_v2_message("old", local_ms(2026, 10, 8, 1, 0), v2_data("b", "pb", {"input": 2000}))
+        self.add_v2_message("old", local_ms(2026, 10, 8, 2, 0), v2_data("b", "pb", {"cache": {"read": 3000, "write": 0}}))
+        result = scanner.scan(self.db_path, now=now)
+        self.assertEqual(result["todayTotalTokens"], 5000)
+        self.assertEqual(result["todaySessions"], 1)
+        self.assertEqual(result["todayTokensByModel"], {"b (pb)": 5000})
+        days = {d["date"]: d["totalTokens"] for d in result["recentDays"]}
+        self.assertEqual(days["2026-10-08"], 5000)
+        self.assertEqual(days["2026-10-07"], 1000)
+        # All-time still comes from session aggregates.
+        self.assertIn("m (p)", result["modelUsage"])
+
+    def test_today_counts_active_sessions_not_created_sessions(self):
+        self.use_zone("UTC")
+        now = dt.datetime(2026, 10, 8, 12, 0)
+        self.add_v2_session("old", "m", 100, local_ms(2026, 9, 1, 9, 0))
+        self.add_v2_session("new", "m", 50, local_ms(2026, 10, 8, 9, 0))
+        self.add_v2_message("old", local_ms(2026, 10, 8, 10, 0), v2_data("b", "pb", {"output": 700}))
+        self.add_v2_message("new", local_ms(2026, 10, 8, 11, 0), v2_data("b", "pb", {"output": 500}))
+        # Token-less chatter today does not create a phantom session.
+        self.add_v2_session("quiet", "m", 0, local_ms(2026, 10, 8, 11, 30))
+        import json as _json
+
+        self._seq += 1
+        self.conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)"
+            " VALUES ('quiet-1', 'quiet', 'user', ?, ?, ?, ?)",
+            (self._seq, local_ms(2026, 10, 8, 11, 45), local_ms(2026, 10, 8, 11, 45),
+             _json.dumps({"content": [{"type": "text", "text": "hi"}]})),
+        )
+        self.conn.commit()
+        result = scanner.scan(self.db_path, now=now)
+        self.assertEqual(result["todayTotalTokens"], 1200)
+        self.assertEqual(result["todaySessions"], 2)
+
+
+class V1MessageFallbackTests(TimezoneTestCase):
+    def setUp(self):
+        super().setUp()
+        self.conn.executescript(MSG_V1_SCHEMA)
+        self.conn.commit()
+        self._seq = 0
+
+    def test_v1_message_table_drives_day_stats(self):
+        self.use_zone("UTC")
+        now = dt.datetime(2026, 10, 8, 12, 0)
+        for sid, when, data in [
+            ("s1", local_ms(2026, 10, 7, 12, 0), v1_data("a", "pa", {"input": 400})),
+            ("s1", local_ms(2026, 10, 8, 1, 0), v1_data("b", "pb", {"input": 600, "output": 60})),
+        ]:
+            self._seq += 1
+            self.conn.execute(
+                "INSERT INTO message (id, session_id, time_created, time_updated, data)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (f"m{self._seq}", sid, when, when, data),
+            )
+        self.conn.commit()
+        result = scanner.scan(self.db_path, now=now)
+        self.assertEqual(result["todayTotalTokens"], 660)
+        self.assertEqual(result["todaySessions"], 1)
+        self.assertEqual(result["todayTokensByModel"], {"b (pb)": 660})
+        days = {d["date"]: d["totalTokens"] for d in result["recentDays"]}
+        self.assertEqual(days["2026-10-07"], 400)
+
+
 if __name__ == "__main__":
     unittest.main()
