@@ -195,6 +195,62 @@ class SqlFilterTests(TimezoneTestCase):
         self.assertEqual(result["todayTotalTokens"], 0)
         self.assertEqual(result["modelUsage"], {})
 
+    def test_total_sessions_counts_each_session_once_across_models(self):
+        # The all-time query groups by model. Each session has one model, so
+        # summing the per-model counts must still equal the number of sessions.
+        self.use_zone("UTC")
+        now = dt.datetime(2026, 10, 8, 12, 0)
+        self.add_session("a", "model-a", local_ms(2026, 10, 8, 1, 0), 100)
+        self.add_session("b", "model-b", local_ms(2026, 10, 8, 2, 0), 200)
+        result = scanner.scan(self.db_path, now=now)
+        self.assertEqual(result["totalSessions"], 2)
+
+
+class ScanOutcomeTests(TimezoneTestCase):
+    def test_success_records_scan_identity(self):
+        self.use_zone("UTC")
+        now = dt.datetime(2026, 10, 8, 12, 0)
+        self.add_session("a", "m", local_ms(2026, 10, 8, 1, 0), 300)
+        result = scanner.scan(self.db_path, now=now)
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["scope"], "device")
+        self.assertGreater(result["scannedAt"], 0)
+
+    def test_missing_database_is_empty_not_an_error(self):
+        self.use_zone("UTC")
+        now = dt.datetime(2026, 10, 8, 12, 0)
+        missing = Path(self._tmp.name) / "missing.db"
+        result = scanner.scan(missing, now=now)
+        self.assertTrue(result["ready"])
+        self.assertFalse(result["hasLocalStats"])
+        self.assertEqual(result["totalSessions"], 0)
+        self.assertGreater(result["scannedAt"], 0)
+
+    def test_locked_database_is_an_error_record_without_zeroed_stats(self):
+        # A transient lock must not look like an empty history: the widget
+        # keeps its last good numbers and retries sooner.
+        self.use_zone("UTC")
+        now = dt.datetime(2026, 10, 8, 12, 0)
+        self.add_session("a", "m", local_ms(2026, 10, 8, 1, 0), 300)
+
+        real_connect = scanner.sqlite3.connect
+
+        def locked(*args, **kwargs):
+            raise scanner.sqlite3.OperationalError("database is locked")
+
+        scanner.sqlite3.connect = locked
+        try:
+            result = scanner.scan(self.db_path, now=now)
+        finally:
+            scanner.sqlite3.connect = real_connect
+
+        self.assertFalse(result["ready"])
+        self.assertTrue(result["retryAdvised"])
+        self.assertIn("database is locked", result["error"])
+        self.assertNotIn("todayTotalTokens", result)
+        self.assertNotIn("modelUsage", result)
+        self.assertGreater(result["scannedAt"], 0)
+
 
 MSG_V2_SCHEMA = """
 CREATE TABLE session_message (

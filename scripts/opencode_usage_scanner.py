@@ -9,6 +9,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -192,7 +193,7 @@ def scan(db_path: Path, now: dt.datetime | None = None) -> dict[str, Any]:
     recent = {day: {"date": day, "totalTokens": 0} for day in recent_dates}
 
     if not db_path.exists():
-        return empty_result()
+        return empty_result(now)
 
     try:
         conn = sqlite3.connect(
@@ -315,11 +316,17 @@ def scan(db_path: Path, now: dt.datetime | None = None) -> dict[str, Any]:
 
         conn.close()
     except Exception as exc:
+        # A locked or unreadable database is a temporary condition, not an
+        # empty history. Emitting zeroed stats here would erase the last good
+        # numbers from the panel; the record says the scan failed instead, and
+        # the widget keeps what it already had on screen.
         print(f"Error querying opencode db: {exc}", file=sys.stderr)
-        return empty_result()
+        return error_result(str(exc))
 
     return {
         "schemaVersion": 1,
+        "scope": "device",
+        "scannedAt": int(time.time()),
         "todaySessions": today_sessions,
         "todayTotalTokens": today_total_tokens,
         "todayTokensByModel": today_tokens_by_model,
@@ -335,6 +342,8 @@ def empty_result(now: dt.datetime | None = None) -> dict[str, Any]:
     recent_dates = recent_date_strings(now or dt.datetime.now())
     return {
         "schemaVersion": 1,
+        "scope": "device",
+        "scannedAt": int(time.time()),
         "todaySessions": 0,
         "todayTotalTokens": 0,
         "todayTokensByModel": {},
@@ -343,6 +352,17 @@ def empty_result(now: dt.datetime | None = None) -> dict[str, Any]:
         "totalSessions": 0,
         "ready": True,
         "hasLocalStats": False,
+    }
+
+
+def error_result(message: str, retry_advised: bool = True) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "scope": "device",
+        "scannedAt": int(time.time()),
+        "ready": False,
+        "error": message,
+        "retryAdvised": retry_advised,
     }
 
 
