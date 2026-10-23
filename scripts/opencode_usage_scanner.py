@@ -123,13 +123,6 @@ def message_day_expr() -> str:
     )
 
 
-def message_ts_expr() -> str:
-    return (
-        f"CASE WHEN time_created>{SEC_MS_THRESHOLD}"
-        " THEN time_created/1000 ELSE time_created END"
-    )
-
-
 def scan_day_stats_from_messages(
     cursor: sqlite3.Cursor,
     table: str,
@@ -150,15 +143,35 @@ def scan_day_stats_from_messages(
     attribution for multi-model sessions.
     """
     day_expr = message_day_expr()
-    ts_expr = message_ts_expr()
+    # OpenCode writes milliseconds today, but older installs can still hold
+    # seconds. Keep both branches while making each comparison sargable, so
+    # session_message_time_created_idx is usable instead of scanning every
+    # message. The old CASE expression hid the column from the planner.
+    week_filter = (
+        f"((time_created > {SEC_MS_THRESHOLD} AND time_created >= ?)"
+        f" OR (time_created <= {SEC_MS_THRESHOLD} AND time_created >= ?))"
+    )
+    today_filter = (
+        f"((time_created > {SEC_MS_THRESHOLD} AND time_created >= ? AND time_created < ?)"
+        f" OR (time_created <= {SEC_MS_THRESHOLD} AND time_created >= ? AND time_created < ?))"
+    )
+    # Materialise the small projection before grouping. Without this SQLite's
+    # GROUP BY sorter carries the full `data` JSON (tens of MB) into its temp
+    # store; with it the sorter only sees day/model/token values.
+    materialized = "MATERIALIZED" if sqlite3.sqlite_version_info >= (3, 35, 0) else ""
     cursor.execute(
-        f"""SELECT {day_expr} AS day, {mid_expr} AS mid, {prov_expr} AS prov,
-                   SUM({MESSAGE_TOKENS}) AS toks
-            FROM {table}
-            WHERE ({MESSAGE_TOKENS})>0 AND ({ts_expr})>=?
+        f"""WITH recent AS {materialized} (
+                SELECT {day_expr} AS day, {mid_expr} AS mid, {prov_expr} AS prov,
+                       ({MESSAGE_TOKENS}) AS toks
+                FROM {table}
+                WHERE {week_filter}
+            )
+            SELECT day, mid, prov, SUM(toks) AS toks
+            FROM recent
+            WHERE toks>0
             GROUP BY day, mid, prov
         """,
-        (week_ago_s,),
+        (week_ago_s * 1000, week_ago_s),
     )
     today_tokens_by_model: dict[str, int] = {}
     today_total_tokens = 0
@@ -173,14 +186,16 @@ def scan_day_stats_from_messages(
             )
             today_total_tokens += row["toks"]
     cursor.execute(
-        f"""SELECT COUNT(*) FROM (
-                SELECT session_id FROM {table}
-                WHERE ({MESSAGE_TOKENS})>0
-                  AND ({ts_expr})>=? AND ({ts_expr})<?
-                GROUP BY session_id
+        f"""WITH recent AS {materialized} (
+                SELECT session_id, ({MESSAGE_TOKENS}) AS toks
+                FROM {table}
+                WHERE {today_filter}
+            )
+            SELECT COUNT(*) FROM (
+                SELECT session_id FROM recent WHERE toks>0 GROUP BY session_id
             )
         """,
-        (today_start_s, today_end_s),
+        (today_start_s * 1000, today_end_s * 1000, today_start_s, today_end_s),
     )
     today_sessions = cursor.fetchone()[0]
     return (today_sessions, today_total_tokens, today_tokens_by_model)
@@ -199,6 +214,11 @@ def scan(db_path: Path, now: dt.datetime | None = None) -> dict[str, Any]:
         conn = sqlite3.connect(
             f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5
         )
+        # The scanner only reads. query_only is a guard against accidental
+        # writes, and temp_store keeps any unavoidable sort spill out of
+        # /var/tmp. The materialised CTE above normally avoids a spill anyway.
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA temp_store=MEMORY")
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         source = session_source(conn)

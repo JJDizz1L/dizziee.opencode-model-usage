@@ -357,6 +357,22 @@ class MessageDayStatsTests(TimezoneTestCase):
         self.assertEqual(result["todayTotalTokens"], 1200)
         self.assertEqual(result["todaySessions"], 2)
 
+    def test_legacy_second_timestamps_are_counted(self):
+        # Older installs stored seconds; current OpenCode stores milliseconds.
+        # The sargable filter keeps both branches.
+        self.use_zone("UTC")
+        now = dt.datetime(2026, 10, 8, 12, 0)
+        self.add_v2_session("old", '{"id":"m","providerID":"p"}', 100, local_ms(2026, 9, 1, 9, 0))
+        self.add_v2_message(
+            "old",
+            local_ms(2026, 10, 8, 1, 0) // 1000,
+            v2_data("b", "pb", {"input": 900}),
+        )
+        result = scanner.scan(self.db_path, now=now)
+        self.assertEqual(result["todayTotalTokens"], 900)
+        self.assertEqual(result["todaySessions"], 1)
+        self.assertEqual(result["todayTokensByModel"], {"b (pb)": 900})
+
 
 class V1MessageFallbackTests(TimezoneTestCase):
     def setUp(self):
