@@ -95,14 +95,35 @@ Item {
     }
 
     function modelWordCase(word) {
-        if (word === "gpt") return "GPT"
-        if (word === "deepseek") return "DeepSeek"
+        var lower = String(word || "").toLowerCase()
+        if (lower === "gpt") return "GPT"
+        if (lower === "glm") return "GLM"
+        if (lower === "deepseek") return "DeepSeek"
+        if (lower === "nvidia") return "NVIDIA"
+        if (lower === "minimax") return "MiniMax"
+        if (lower === "opencode") return "OpenCode"
+        if (lower === "gguf") return "GGUF"
         return word.charAt(0).toUpperCase() + word.slice(1)
     }
 
-    // Model ids arrive hyphenated with the version split across segments
-    // (`claude-sonnet-4-5`, `gpt-5.1-codex`). Rejoin the numeric run into one
-    // version and title-case the words around it, keeping the provider suffix
+    // Vendors that appear before the slash in catalogue ids such as
+    // `z-ai/glm-5.3-flash` or `cline-pass/deepseek-v4-flash`.
+    function vendorWordCase(value) {
+        var lower = String(value || "").toLowerCase()
+        if (lower === "z-ai" || lower === "zai") return "Z.AI"
+        if (lower === "cline-pass") return "Cline Pass"
+        if (lower === "cline-free") return "Cline Free"
+        if (lower === "opencode-go") return "OpenCode Go"
+        if (lower === "inclusionai") return "InclusionAI"
+        if (lower === "unsloth") return "Unsloth"
+        return root.modelWordCase(value)
+    }
+
+    // Model ids arrive in two shapes: native hyphenated ids
+    // (`claude-sonnet-4-5`, `gpt-5.1-codex`) and vendor-prefixed catalogue
+    // ids (`z-ai/glm-5.3-flash`, `cline-pass/deepseek-v4-flash`). Rejoin the
+    // numeric run into one version, title-case the words around it, keep a
+    // context suffix (`1m`) out of the version, and keep the provider suffix
     // the scanner appends.
     function friendlyModelName(id) {
         if (!id) return root.unknownModelLabel
@@ -129,6 +150,14 @@ Item {
             } catch (e) {}
         }
 
+        var vendor = ""
+        var slash = value.indexOf("/")
+        if (slash > 0) {
+            vendor = value.substring(0, slash)
+            value = value.substring(slash + 1)
+        }
+        value = value.replace(/:/g, "-")
+
         var name = value.replace(/^claude-/, "").replace(/-\d{8}$/, "")
         var parts = name.split("-")
         var words = []
@@ -137,6 +166,13 @@ Item {
             var part = parts[i]
             if (part === "") continue
             if (/^\d/.test(part)) {
+                // `1m` / `200k` is context size, not another version segment.
+                if (/^\d+[mk]$/i.test(part) && version.length > 0) {
+                    words.push(version.join("."))
+                    version = []
+                    words.push(part.toUpperCase())
+                    continue
+                }
                 version.push(part)
                 continue
             }
@@ -147,6 +183,11 @@ Item {
             words.push(root.modelWordCase(part))
         }
         if (version.length > 0) words.push(version.join("."))
-        return (words.length > 0 ? words.join(" ") : root.unknownModelLabel) + suffix
+
+        var modelLabel = words.length > 0 ? words.join(" ") : root.unknownModelLabel
+        var vendorLabel = vendor !== "" ? root.vendorWordCase(vendor) : ""
+        if (vendorLabel !== "" && modelLabel.toLowerCase().indexOf(vendorLabel.toLowerCase()) === 0)
+            vendorLabel = ""
+        return (vendorLabel !== "" ? vendorLabel + " · " : "") + modelLabel + suffix
     }
 }
