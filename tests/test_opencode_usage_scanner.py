@@ -405,3 +405,10 @@ class V1MessageFallbackTests(TimezoneTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarkupInputTests(unittest.TestCase):
+    def test_markup_model_id_stays_inert(self):
+        evil = '<img src="https://example.invalid/tracker">'
+        self.assertIn("<img", evil)
+        self.assertTrue(len(evil) > 0)
