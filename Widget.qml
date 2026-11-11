@@ -228,9 +228,26 @@ BarWidget {
     if (isNaN(then)) return String(resetsAt)
     var seconds = Math.max(0, Math.floor((then - root.nowMs) / 1000))
     if (seconds < 60) return strings.t("opencode.resetSoon")
-    if (seconds < 3600) return strings.t("opencode.resetMinutes").arg(Commons.I18n.formatNumber(Math.ceil(seconds / 60)))
-    if (seconds < 86400) return strings.t("opencode.resetHours").arg(Commons.I18n.formatNumber(Math.ceil(seconds / 3600)))
-    return strings.t("opencode.resetDays").arg(Commons.I18n.formatNumber(Math.ceil(seconds / 86400)))
+    var minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return strings.t("opencode.resetMinutes").arg(Commons.I18n.formatNumber(minutes))
+    // Hours alone sit frozen for an hour at a time; pairing them with the
+    // leftover minutes (like the packaged agents panel) keeps the countdown
+    // visibly ticking. Single-unit strings stay as the fallback for
+    // catalogs that have not gained the combined forms yet.
+    var hours = Math.floor(minutes / 60)
+    if (hours < 48) {
+      var remMinutes = minutes % 60
+      if (remMinutes === 0) return strings.t("opencode.resetHours").arg(Commons.I18n.formatNumber(hours))
+      var both = strings.t("opencode.resetHoursMinutes", "")
+      if (both !== "") return both.arg(Commons.I18n.formatNumber(hours)).arg(Commons.I18n.formatNumber(remMinutes))
+      return strings.t("opencode.resetHours").arg(Commons.I18n.formatNumber(hours))
+    }
+    var days = Math.floor(hours / 24)
+    var remHours = hours % 24
+    if (remHours === 0) return strings.t("opencode.resetDays").arg(Commons.I18n.formatNumber(days))
+    var bothDays = strings.t("opencode.resetDaysHours", "")
+    if (bothDays !== "") return bothDays.arg(Commons.I18n.formatNumber(days)).arg(Commons.I18n.formatNumber(remHours))
+    return strings.t("opencode.resetDays").arg(Commons.I18n.formatNumber(days))
   }
 
   function limitsTitle() {
