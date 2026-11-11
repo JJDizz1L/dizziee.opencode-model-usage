@@ -812,7 +812,7 @@ BarWidget {
 
     ColumnLayout {
       width: parent.width
-      spacing: 8
+      spacing: 6
       Repeater {
         model: limitsCard.provider ? (limitsCard.provider.limits || []) : []
         delegate: ColumnLayout {
@@ -829,7 +829,22 @@ BarWidget {
               font.family: fontFamily
               font.pixelSize: 11
               elide: Text.ElideRight
+              Layout.preferredWidth: 92
+            }
+            Rectangle {
               Layout.fillWidth: true
+              Layout.preferredHeight: 10
+              radius: Math.max(1, Style.cornerRadius / 3)
+              color: track
+              Rectangle {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: parent.width * root.clamp(Number(modelData.percent || 0), 0, 1)
+                radius: Math.max(1, Style.cornerRadius / 3)
+                color: Number(modelData.percent || 0) >= root.limitAlertThreshold ? root.alpha(urgent, 0.8) : root.alpha(foreground, root.barFillAlpha)
+                Behavior on width { NumberAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
+              }
             }
             Text {
               textFormat: Text.PlainText
@@ -838,21 +853,8 @@ BarWidget {
               font.family: fontFamily
               font.pixelSize: 11
               font.bold: true
-            }
-          }
-          Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 6
-            radius: Style.cornerRadius
-            color: track
-            Rectangle {
-              anchors.left: parent.left
-              anchors.top: parent.top
-              anchors.bottom: parent.bottom
-              width: parent.width * root.clamp(Number(modelData.percent || 0), 0, 1)
-              radius: Style.cornerRadius
-              color: Number(modelData.percent || 0) >= root.limitAlertThreshold ? root.alpha(urgent, 0.8) : root.alpha(foreground, root.barFillAlpha)
-              Behavior on width { NumberAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
+              horizontalAlignment: Text.AlignRight
+              Layout.preferredWidth: 40
             }
           }
           Text {
@@ -861,7 +863,7 @@ BarWidget {
             text: root.limitResetText(modelData.resetsAt)
             color: root.limitValueColor(modelData.percent)
             font.family: fontFamily
-            font.pixelSize: 11
+            font.pixelSize: 10
           }
         }
       }
