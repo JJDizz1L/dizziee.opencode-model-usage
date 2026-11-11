@@ -94,7 +94,10 @@ Item {
 
         onExited: {
             root.refreshing = false
-            if (root.pendingRefresh) {
+            if (root.pendingLimitsRefresh) {
+                root.pendingLimitsRefresh = false
+                root.refreshLimits(true)
+            } else if (root.pendingRefresh) {
                 root.pendingRefresh = false
                 root.refresh(true)
             }
@@ -200,6 +203,35 @@ Item {
     function isFresh(maxAgeSec) {
         return root.ready && root.scannedAtMs > 0
             && (Date.now() - root.scannedAtMs) < Math.max(0, Number(maxAgeSec || 0)) * 1000
+    }
+
+    // The online meters ride the packaged collector's own cache, so they
+    // refresh on a faster lane than the sqlite scan. limitsFetchedAt arrives
+    // in milliseconds (unlike scannedAt, which is seconds).
+    function isLimitsFresh(maxAgeSec) {
+        return root.limitsFetchedAtMs > 0
+            && (Date.now() - root.limitsFetchedAtMs) < Math.max(0, Number(maxAgeSec || 0)) * 1000
+    }
+
+    property bool pendingLimitsRefresh: false
+
+    function refreshLimits(force, maxAgeSec) {
+        if (scanner.running) {
+            root.pendingLimitsRefresh = true
+            return
+        }
+        if (force !== true && maxAgeSec !== undefined && root.isLimitsFresh(maxAgeSec))
+            return
+
+        root.refreshing = true
+        pendingLimitsRefresh = false
+        scanner.command = ["/usr/bin/python3", root.scannerScriptPath,
+            root.resolvePath(root.dbPath), "--limits-only", "--cache", root.cachePath]
+        scanner.running = true
+    }
+
+    function refreshLimitsIfStale(maxAgeSec) {
+        root.refreshLimits(false, maxAgeSec)
     }
 
     function refresh(force, maxAgeSec) {

@@ -17,6 +17,12 @@ Item {
     readonly property bool refreshing: opencodeProvider.refreshing
     readonly property int refreshIntervalSec: Math.max(30, Number(root.setting("refreshIntervalSec", 900)))
 
+    // The online meters are cheap (the packaged collector owns its cache),
+    // so they run a faster lane than the sqlite scan — mirroring the
+    // packaged agents panel's limits-only cadence (3 minutes). Like there,
+    // these runs reuse the cached scan; only the meters are new.
+    readonly property int limitsIntervalSec: Math.min(180, root.refreshIntervalSec)
+
     // The first tick waits for the cache file to load, so a fresh cache costs
     // no Python process at shell start. A stale one is scanned once; every
     // later tick skips when another instance already wrote a fresh snapshot.
@@ -29,7 +35,9 @@ Item {
         running: true
         onTriggered: {
             root.refreshIfStale(root.refreshIntervalSec * 0.9)
+            root.refreshLimitsIfStale(root.limitsIntervalSec * 0.9)
             refreshTimer.start()
+            limitsTimer.start()
         }
     }
 
@@ -39,6 +47,14 @@ Item {
         repeat: true
         running: false
         onTriggered: root.refreshIfStale(root.refreshIntervalSec * 0.9)
+    }
+
+    Timer {
+        id: limitsTimer
+        interval: root.limitsIntervalSec * 1000
+        repeat: true
+        running: false
+        onTriggered: root.refreshLimitsIfStale(root.limitsIntervalSec * 0.9)
     }
 
     // A failed scan asks for a sooner try instead of waiting out the full
@@ -84,6 +100,10 @@ Item {
 
     function refreshIfStale(maxAgeSec) {
         opencodeProvider.refreshIfStale(maxAgeSec)
+    }
+
+    function refreshLimitsIfStale(maxAgeSec) {
+        opencodeProvider.refreshLimitsIfStale(maxAgeSec)
     }
 
     function formatTokenCount(n) {

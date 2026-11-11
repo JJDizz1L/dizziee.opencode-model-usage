@@ -249,7 +249,10 @@ BarWidget {
         panel.loadedContent.panelFlick.contentY = 0
       // The background scan keeps the bar chip current. Opening the panel only
       // asks for a scan when the cache is old; a fresh one costs nothing.
+      // Meters refresh on their own faster lane, but an open panel wants the
+      // numbers that go stale on the wire, so it also asks for those.
       usageMain.refreshIfStale(30)
+      usageMain.refreshLimitsIfStale(60)
       Qt.callLater(root.focusKeys)
     }
   }

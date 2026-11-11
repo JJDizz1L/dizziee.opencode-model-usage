@@ -53,11 +53,13 @@ omarchy bar set dizziee.opencode-model-usage refreshIntervalSec 900 --json
 
 Numbers need `--json`, or they land in `shell.json` as strings. The panel's settings view (right-click the bar icon) writes the same value.
 
-A background tick only starts Python when the cached snapshot is older than 90% of the interval. Opening the panel refreshes only if the snapshot is more than 30 seconds old; `r`, the Refresh button, or middle-clicking the bar icon forces a scan.
+A background tick only starts Python when the cached snapshot is older than 90% of the interval. Opening the panel refreshes only if the snapshot is more than 30 seconds old; `r`, the Refresh button, or middle-clicking the bar icon forces a scan. The online meters run a separate, faster lane (see below), so opening the panel also refreshes them if they are more than 60 seconds old.
 
 ## Online plan meters (zero setup)
 
 Each scan also asks the packaged `omarchy.agents` collector (`omarchy-agent-usage-opencode --limits-only`) for its secret-free record and merges only the display fields: `limits` (rolling 5h / weekly / monthly percent + reset time), `tierLabel` (e.g. `Go`), `limitsStale`, and the status/help texts. Credential discovery stays inside that collector (env keys → opencode's credential store → `auth.json` files → Console session), so this plugin never reads, logs, or caches any API key or token — the panel shows the same meters as the agents panel with nothing to configure. A machine with no Go plan, or no collector installed, simply shows local stats; pass `--no-limits` to the scanner for local-only output.
+
+The meters are cheap (the collector owns its own per-credential cache), so they refresh on a faster lane than the sqlite scan: every `min(180, refreshIntervalSec)` seconds the scanner runs with `--limits-only`, which reuses the cached local stats and only renews the meters — mirroring the packaged agents panel's limits-only cadence. `scannedAt` is left untouched so the full-scan schedule is unaffected, and a failed fetch keeps the last good meters.
 
 ## Data and cache
 

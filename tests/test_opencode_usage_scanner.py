@@ -490,6 +490,97 @@ class OnlineLimitsTests(unittest.TestCase):
             scanner.fetch_online_limits = orig
 
 
+class LimitsOnlyTests(unittest.TestCase):
+    """--limits-only: meters refresh without touching the database."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self._tmp.name) / "usage.json"
+        self._orig_fetch = scanner.fetch_online_limits
+        self.sample_limits = {
+            "limits": [{"label": "Weekly (7-day)", "percent": 0.5,
+                        "resetsAt": "2026-11-16T00:00:00.000Z"}],
+            "tierLabel": "Go",
+            "limitsStale": False,
+            "limitsFetchedAt": 1794425134000,
+            "usageStatusText": "",
+            "authHelpText": "",
+        }
+
+    def tearDown(self):
+        scanner.fetch_online_limits = self._orig_fetch
+        self._tmp.cleanup()
+
+    def write_cache(self, record):
+        self.cache.write_text(json.dumps(record), encoding="utf-8")
+
+    def test_preserves_stats_and_scanned_at(self):
+        base = {
+            "schemaVersion": 1, "scope": "device", "scannedAt": 1700000000,
+            "todaySessions": 3, "todayTotalTokens": 900,
+            "todayTokensByModel": {"m": 900}, "recentDays": [],
+            "modelUsage": {"m": {}}, "totalSessions": 5,
+            "ready": True, "hasLocalStats": True,
+            "limits": [], "tierLabel": "",
+            "limitsStale": False, "limitsFetchedAt": 0,
+            "usageStatusText": "", "authHelpText": "",
+        }
+        self.write_cache(base)
+        scanner.fetch_online_limits = lambda timeout=8: dict(self.sample_limits)
+        out = scanner.refresh_limits_only(self.cache)
+        self.assertEqual(out["scannedAt"], 1700000000)
+        self.assertEqual(out["todayTotalTokens"], 900)
+        self.assertEqual(out["totalSessions"], 5)
+        self.assertEqual(out["limits"], self.sample_limits["limits"])
+        self.assertEqual(out["tierLabel"], "Go")
+        self.assertEqual(out["limitsFetchedAt"], 1794425134000)
+
+    def test_missing_cache_yields_skeleton_with_zero_scanned_at(self):
+        # scannedAt 0 keeps the full-scan freshness gate open.
+        scanner.fetch_online_limits = lambda timeout=8: dict(self.sample_limits)
+        out = scanner.refresh_limits_only(self.cache)
+        self.assertTrue(out["ready"])
+        self.assertFalse(out["hasLocalStats"])
+        self.assertEqual(out["scannedAt"], 0)
+        self.assertEqual(out["limits"], self.sample_limits["limits"])
+
+    def test_failed_fetch_keeps_cached_limits(self):
+        base = {
+            "schemaVersion": 1, "scope": "device", "scannedAt": 1700000000,
+            "todaySessions": 1, "todayTotalTokens": 100,
+            "todayTokensByModel": {}, "recentDays": [],
+            "modelUsage": {}, "totalSessions": 1,
+            "ready": True, "hasLocalStats": True,
+            "limits": [{"label": "Weekly (7-day)", "percent": 0.4,
+                        "resetsAt": "2026-11-16T00:00:00.000Z"}],
+            "tierLabel": "Go",
+            "limitsStale": False, "limitsFetchedAt": 1794425100000,
+            "usageStatusText": "", "authHelpText": "",
+        }
+        self.write_cache(base)
+        scanner.fetch_online_limits = lambda timeout=8: {}
+        out = scanner.refresh_limits_only(self.cache)
+        self.assertEqual(len(out["limits"]), 1)
+        self.assertEqual(out["limitsFetchedAt"], 1794425100000)
+        self.assertEqual(out["todayTotalTokens"], 100)
+
+    def test_error_record_cache_falls_back_to_skeleton(self):
+        self.write_cache({"ready": False, "error": "database is locked",
+                          "scannedAt": 1700000000})
+        scanner.fetch_online_limits = lambda timeout=8: dict(self.sample_limits)
+        out = scanner.refresh_limits_only(self.cache)
+        self.assertTrue(out["ready"])
+        self.assertEqual(out["scannedAt"], 0)
+        self.assertEqual(out["limits"], self.sample_limits["limits"])
+
+    def test_resolve_cache_path(self):
+        explicit = scanner.resolve_cache_path("~/custom.json")
+        self.assertTrue(str(explicit).endswith("custom.json"))
+        default = scanner.resolve_cache_path("")
+        self.assertTrue(str(default).endswith(
+            "omarchy/dizziee.opencode-model-usage.json"))
+
+
 if __name__ == "__main__":
     unittest.main()
 

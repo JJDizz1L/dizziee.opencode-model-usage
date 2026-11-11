@@ -491,6 +491,42 @@ def error_result(message: str, retry_advised: bool = True) -> dict[str, Any]:
     }
 
 
+def resolve_cache_path(explicit: str = "") -> Path:
+    """Snapshot file the widget watches; mirrors providers/Opencode.qml."""
+    if explicit:
+        return expand_path(explicit)
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache"
+    )
+    return Path(base) / "omarchy" / "dizziee.opencode-model-usage.json"
+
+
+def refresh_limits_only(cache_path: Path) -> dict[str, Any]:
+    """Refresh only the online meters, reusing the cached local stats.
+
+    The sqlite scan stays on its own (slower) cadence; this path never
+    touches the database. ``scannedAt`` is preserved from the cache so the
+    widget's db-scan freshness gate is unaffected — bumping it here would
+    starve the full scan forever. With no usable cache, emit the empty
+    skeleton (``scannedAt`` 0, so a full scan still fires) with fresh
+    meters, so a new machine shows its subscription immediately.
+    """
+    record: dict[str, Any] | None = None
+    try:
+        text = cache_path.read_text(encoding="utf-8")
+        if text and len(text) <= 131072:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and parsed.get("ready") is True:
+                record = parsed
+    except Exception:
+        record = None
+    if record is None:
+        record = empty_result(include_limits=False)
+        record["scannedAt"] = 0
+    record.update(fetch_online_limits())
+    return record
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -501,7 +537,24 @@ def main() -> int:
         action="store_true",
         help="Skip the online Go-plan meters (local stats only).",
     )
+    parser.add_argument(
+        "--limits-only",
+        action="store_true",
+        help="Skip the sqlite scan: refresh only the online meters in the "
+        "cached snapshot and print the merged record.",
+    )
+    parser.add_argument(
+        "--cache",
+        default="",
+        help="Snapshot file updated by --limits-only "
+        "(defaults to the plugin cache under $XDG_CACHE_HOME).",
+    )
     args = parser.parse_args()
+
+    if args.limits_only:
+        summary = refresh_limits_only(resolve_cache_path(args.cache))
+        print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
+        return 0
 
     db_path = expand_path(args.db_path)
     summary = scan(db_path, include_limits=not args.no_limits)
