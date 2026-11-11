@@ -218,6 +218,27 @@ BarWidget {
     return strings.t("opencode.updatedDays").arg(Commons.I18n.formatNumber(Math.floor(seconds / 86400)))
   }
 
+  function limitPercentText(percent) {
+    return Commons.I18n.formatNumber(Math.round(Number(percent || 0) * 100)) + "%"
+  }
+
+  function limitResetText(resetsAt) {
+    if (!resetsAt) return ""
+    var then = Date.parse(String(resetsAt))
+    if (isNaN(then)) return String(resetsAt)
+    var seconds = Math.max(0, Math.floor((then - root.nowMs) / 1000))
+    if (seconds < 60) return strings.t("opencode.resetSoon")
+    if (seconds < 3600) return strings.t("opencode.resetMinutes").arg(Commons.I18n.formatNumber(Math.ceil(seconds / 60)))
+    if (seconds < 86400) return strings.t("opencode.resetHours").arg(Commons.I18n.formatNumber(Math.ceil(seconds / 3600)))
+    return strings.t("opencode.resetDays").arg(Commons.I18n.formatNumber(Math.ceil(seconds / 86400)))
+  }
+
+  function limitsTitle() {
+    var tier = provider ? String(provider.tierLabel || "") : ""
+    if (tier !== "") return strings.t("opencode.goPlan").arg(tier)
+    return strings.t("opencode.goPlanDefault")
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -506,6 +527,7 @@ BarWidget {
             }
 
             StatusCard { provider: root.settingsMode ? null : root.provider }
+            LimitsCard { provider: root.settingsMode ? null : root.provider }
             TodayCard { provider: root.settingsMode ? null : root.provider }
             WeekCard { provider: root.settingsMode ? null : root.provider }
             AllTimeCard { provider: root.settingsMode ? null : root.provider }
@@ -735,6 +757,71 @@ BarWidget {
         detail = strings.t("opencode.scanFailedDetail").arg(provider.errorText || "")
       if (provider.stale) detail += " " + strings.t("opencode.showingLastGood")
       return detail
+    }
+  }
+
+  component LimitsCard: SectionCard {
+    id: limitsCard
+    property var provider: null
+    visible: !!provider && provider.limits && provider.limits.length > 0
+    title: root.limitsTitle()
+    subtitle: provider && provider.limitsStale ? strings.t("opencode.limitsStale") : ""
+
+    ColumnLayout {
+      width: parent.width
+      spacing: 8
+      Repeater {
+        model: limitsCard.provider ? (limitsCard.provider.limits || []) : []
+        delegate: ColumnLayout {
+          required property var modelData
+          Layout.fillWidth: true
+          spacing: 4
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Text {
+              textFormat: Text.PlainText
+              text: String(modelData.label || "")
+              color: dim
+              font.family: fontFamily
+              font.pixelSize: 11
+              elide: Text.ElideRight
+              Layout.fillWidth: true
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: root.limitPercentText(modelData.percent)
+              color: Number(modelData.percent || 0) >= 0.9 ? urgent : foreground
+              font.family: fontFamily
+              font.pixelSize: 11
+              font.bold: true
+            }
+          }
+          Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 6
+            radius: Style.cornerRadius
+            color: root.alpha(foreground, 0.05)
+            Rectangle {
+              anchors.left: parent.left
+              anchors.top: parent.top
+              anchors.bottom: parent.bottom
+              width: parent.width * root.clamp(Number(modelData.percent || 0), 0, 1)
+              radius: Style.cornerRadius
+              color: Number(modelData.percent || 0) >= 0.9 ? root.alpha(urgent, 0.8) : root.alpha(foreground, 0.35)
+              Behavior on width { NumberAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
+            }
+          }
+          Text {
+            textFormat: Text.PlainText
+            visible: root.limitResetText(modelData.resetsAt) !== ""
+            text: root.limitResetText(modelData.resetsAt)
+            color: dim
+            font.family: fontFamily
+            font.pixelSize: 10
+          }
+        }
+      }
     }
   }
 

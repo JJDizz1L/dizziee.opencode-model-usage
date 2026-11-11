@@ -42,5 +42,12 @@
   "opencode.savedToShell": "Saved to shell.json",
   "opencode.savedForSession": "Saved for this session",
   "opencode.settingsKeys": "s saves · esc closes",
-  "opencode.panelKeys": "j/k scroll · r refresh · s/settings · esc close"
+  "opencode.panelKeys": "j/k scroll · r refresh · s/settings · esc close",
+  "opencode.goPlan": "OpenCode %1",
+  "opencode.goPlanDefault": "OpenCode Plan",
+  "opencode.limitsStale": "Stale · showing the last good meters",
+  "opencode.resetSoon": "Resets soon",
+  "opencode.resetMinutes": "Resets in %1m",
+  "opencode.resetHours": "Resets in %1h",
+  "opencode.resetDays": "Resets in %1d"
 }

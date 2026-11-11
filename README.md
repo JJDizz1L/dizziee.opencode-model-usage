@@ -55,6 +55,10 @@ Numbers need `--json`, or they land in `shell.json` as strings. The panel's sett
 
 A background tick only starts Python when the cached snapshot is older than 90% of the interval. Opening the panel refreshes only if the snapshot is more than 30 seconds old; `r`, the Refresh button, or middle-clicking the bar icon forces a scan.
 
+## Online plan meters (zero setup)
+
+Each scan also asks the packaged `omarchy.agents` collector (`omarchy-agent-usage-opencode --limits-only`) for its secret-free record and merges only the display fields: `limits` (rolling 5h / weekly / monthly percent + reset time), `tierLabel` (e.g. `Go`), `limitsStale`, and the status/help texts. Credential discovery stays inside that collector (env keys → opencode's credential store → `auth.json` files → Console session), so this plugin never reads, logs, or caches any API key or token — the panel shows the same meters as the agents panel with nothing to configure. A machine with no Go plan, or no collector installed, simply shows local stats; pass `--no-limits` to the scanner for local-only output.
+
 ## Data and cache
 
 The scanner opens OpenCode's SQLite database read-only and extracts only the model and token fields it needs for aggregate counts. It never copies the database, and message text is never stored or shown. The time window is index-backed and the grouping projection is materialised in memory, so a scan does not spill a temporary file to disk.

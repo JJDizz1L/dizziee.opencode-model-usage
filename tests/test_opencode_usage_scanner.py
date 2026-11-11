@@ -5,6 +5,7 @@ Run with: python3 -m unittest discover -s tests
 
 import datetime as dt
 import importlib.util
+import json
 import os
 import sqlite3
 import tempfile
@@ -45,8 +46,12 @@ class TimezoneTestCase(unittest.TestCase):
         conn.executescript(SCHEMA)
         conn.commit()
         self.conn = conn
+        # Local-stat tests stay offline: never touch the system collector.
+        self._orig_fetch = scanner.fetch_online_limits
+        scanner.fetch_online_limits = lambda timeout=8: {}
 
     def tearDown(self):
+        scanner.fetch_online_limits = self._orig_fetch
         self.conn.close()
         self._tmp.cleanup()
         if self._old_tz is None:
@@ -401,6 +406,88 @@ class V1MessageFallbackTests(TimezoneTestCase):
         self.assertEqual(result["todayTokensByModel"], {"b (pb)": 660})
         days = {d["date"]: d["totalTokens"] for d in result["recentDays"]}
         self.assertEqual(days["2026-10-07"], 400)
+
+
+class OnlineLimitsTests(unittest.TestCase):
+    """Online Go-plan meters: display fields only, credentials never enter."""
+
+    def test_sanitize_keeps_display_fields(self):
+        data = {
+            "limits": [
+                {"label": "Rolling (5h)", "percent": 0.0, "resetsAt": "2026-11-12T00:19:55.000Z"},
+                {"label": "Weekly (7-day)", "percent": 0.09, "resetsAt": "2026-11-16T00:00:00.000Z"},
+                {"label": "bogus", "percent": 9.99, "resetsAt": "x"},
+                {"label": "", "percent": 0.1},
+                "not-a-window",
+            ],
+            "tierLabel": "Go",
+            "limitsStale": True,
+            "limitsFetchedAt": 1794425134832,
+            "usageStatusText": "Sign-in expired",
+            "authHelpText": "Reconnect",
+            "token": "sk-secret-should-never-appear",
+        }
+        out = scanner.sanitize_collector_limits(data)
+        self.assertEqual([w["label"] for w in out["limits"]],
+                         ["Rolling (5h)", "Weekly (7-day)"])
+        self.assertEqual(out["tierLabel"], "Go")
+        self.assertTrue(out["limitsStale"])
+        blob = json.dumps(out)
+        self.assertNotIn("sk-secret", blob)
+        self.assertNotIn("token", blob.lower().replace("tokens", ""))
+
+    def test_sanitize_rejects_non_dict(self):
+        self.assertEqual(scanner.sanitize_collector_limits(None), {})
+        self.assertEqual(scanner.sanitize_collector_limits([]), {})
+
+    def test_fetch_returns_empty_without_collector(self):
+        orig_path = scanner.SYSTEM_COLLECTOR
+        orig_which = scanner.shutil.which
+        try:
+            scanner.SYSTEM_COLLECTOR = Path("/nonexistent/collector")
+            scanner.shutil.which = lambda *a, **k: None
+            self.assertEqual(scanner.fetch_online_limits(timeout=1), {})
+        finally:
+            scanner.SYSTEM_COLLECTOR = orig_path
+            scanner.shutil.which = orig_which
+
+    def test_scan_merges_stubbed_limits(self):
+        orig = scanner.fetch_online_limits
+        sample = {
+            "limits": [{"label": "Weekly (7-day)", "percent": 0.5, "resetsAt": "2026-11-16T00:00:00.000Z"}],
+            "tierLabel": "Go",
+            "limitsStale": False,
+            "limitsFetchedAt": 123,
+            "usageStatusText": "",
+            "authHelpText": "",
+        }
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            scanner.fetch_online_limits = lambda timeout=8: dict(sample)
+            db = Path(tmp.name) / "empty.db"
+            out = scanner.scan(db, now=dt.datetime(2026, 10, 8, 12, 0))
+            self.assertEqual(out["limits"], sample["limits"])
+            self.assertEqual(out["tierLabel"], "Go")
+        finally:
+            scanner.fetch_online_limits = orig
+            tmp.cleanup()
+
+    def test_scan_skips_limits_when_disabled(self):
+        called = []
+        orig = scanner.fetch_online_limits
+        try:
+            scanner.fetch_online_limits = lambda timeout=8: called.append(1) or {}
+            tmp = tempfile.TemporaryDirectory()
+            try:
+                db = Path(tmp.name) / "empty.db"
+                out = scanner.scan(db, now=dt.datetime(2026, 10, 8, 12, 0),
+                                   include_limits=False)
+                self.assertEqual(called, [])
+                self.assertEqual(out["limits"], [])
+            finally:
+                tmp.cleanup()
+        finally:
+            scanner.fetch_online_limits = orig
 
 
 if __name__ == "__main__":

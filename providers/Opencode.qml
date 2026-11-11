@@ -32,6 +32,14 @@ Item {
     property int totalSessions: 0
     property var modelUsage: ({})
 
+    // Online Go-plan meters merged by the scanner from the packaged agents
+    // collector's secret-free record. The plugin never sees credentials:
+    // only these display fields reach the cache.
+    property var limits: []
+    property string tierLabel: ""
+    property bool limitsStale: false
+    property double limitsFetchedAtMs: 0
+
     property bool hasLocalStats: true
 
     property string dbPath: "~/.local/share/opencode/opencode.db"
@@ -154,8 +162,6 @@ Item {
             root.scanErrorKind = ""
             root.retryAdvised = false
             root.errorText = ""
-            root.usageStatusText = ""
-            root.authHelpText = ""
             root.hasLocalStats = data.hasLocalStats !== false
             root.scannedAtMs = Number(data.scannedAt || 0) * 1000
             root.todaySessions = Math.max(0, Number(data.todaySessions || 0))
@@ -164,6 +170,28 @@ Item {
             root.recentDays = data.recentDays || []
             root.modelUsage = data.modelUsage || ({})
             root.totalSessions = Math.max(0, Number(data.totalSessions || 0))
+            // Online meters: validated display data only, no credentials.
+            var cleanLimits = []
+            if (data.limits && data.limits.length !== undefined) {
+                for (var i = 0; i < Math.min(data.limits.length, 10); i++) {
+                    var w = data.limits[i] || {}
+                    var pct = Number(w.percent)
+                    if (!(pct >= 0 && pct <= 1)) continue
+                    var label = String(w.label || "").slice(0, 64)
+                    if (label === "") continue
+                    cleanLimits.push({
+                        label: label,
+                        percent: pct,
+                        resetsAt: String(w.resetsAt || "").slice(0, 64)
+                    })
+                }
+            }
+            root.limits = cleanLimits
+            root.tierLabel = String(data.tierLabel || "").slice(0, 32)
+            root.limitsStale = data.limitsStale === true && cleanLimits.length > 0
+            root.limitsFetchedAtMs = Math.max(0, Number(data.limitsFetchedAt || 0))
+            root.usageStatusText = String(data.usageStatusText || "").slice(0, 256)
+            root.authHelpText = String(data.authHelpText || "").slice(0, 512)
         } catch (e) {
             root.fail(String(e), true, "parse")
         }

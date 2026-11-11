@@ -7,7 +7,9 @@ import argparse
 import datetime as dt
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -15,6 +17,14 @@ from typing import Any
 
 
 SEC_MS_THRESHOLD = 10_000_000_000
+
+# Zero-setup online meters come from the packaged agents collector, never from
+# keys read here. This plugin never reads OPENCODE_API_KEY, auth.json, or the
+# credential table: it asks the system collector for its (secret-free) record
+# and merges only the display fields. No token ever enters this process.
+SYSTEM_COLLECTOR = Path("/usr/share/omarchy/bin/omarchy-agent-usage-opencode")
+LIMITS_JSON_MAX_BYTES = 65536
+LIMITS_MAX_WINDOWS = 10
 
 
 def expand_path(value: str) -> Path:
@@ -201,14 +211,101 @@ def scan_day_stats_from_messages(
     return (today_sessions, today_total_tokens, today_tokens_by_model)
 
 
-def scan(db_path: Path, now: dt.datetime | None = None) -> dict[str, Any]:
+def sanitize_limit_window(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    label = str(entry.get("label", "")).strip()[:64]
+    if not label:
+        return None
+    try:
+        percent = float(entry.get("percent", -1))
+    except (TypeError, ValueError):
+        return None
+    if not (0.0 <= percent <= 1.0):
+        return None
+    resets_at = str(entry.get("resetsAt", ""))[:64]
+    return {"label": label, "percent": percent, "resetsAt": resets_at}
+
+
+def sanitize_collector_limits(data: Any) -> dict[str, Any]:
+    """Keep only display fields from the system collector's secret-free record."""
+    if not isinstance(data, dict):
+        return {}
+    raw_limits = data.get("limits")
+    limits: list[dict[str, Any]] = []
+    if isinstance(raw_limits, list):
+        for entry in raw_limits[:LIMITS_MAX_WINDOWS]:
+            window = sanitize_limit_window(entry)
+            if window is not None:
+                limits.append(window)
+    tier = str(data.get("tierLabel", ""))[:32]
+    status = str(data.get("usageStatusText", ""))[:256]
+    help_text = str(data.get("authHelpText", ""))[:512]
+    try:
+        fetched_at = int(data.get("limitsFetchedAt", 0) or 0)
+    except (TypeError, ValueError):
+        fetched_at = 0
+    return {
+        "limits": limits,
+        "tierLabel": tier,
+        "limitsStale": bool(data.get("limitsStale", False)) and bool(limits),
+        "limitsFetchedAt": max(0, fetched_at),
+        "usageStatusText": status,
+        "authHelpText": help_text,
+    }
+
+
+def empty_limits() -> dict[str, Any]:
+    return {
+        "limits": [],
+        "tierLabel": "",
+        "limitsStale": False,
+        "limitsFetchedAt": 0,
+        "usageStatusText": "",
+        "authHelpText": "",
+    }
+
+
+def fetch_online_limits(timeout: float = 8) -> dict[str, Any]:
+    """Ask the packaged collector for its secret-free limits record.
+
+    The collector owns credential discovery (env -> DB store -> auth.json ->
+    Console session) and its per-credential cache, so a fresh answer here
+    costs no network when its own cache is recent. Any failure degrades to
+    local-only stats: {} (the caller falls back to empty_limits()).
+    """
+    try:
+        collector = str(SYSTEM_COLLECTOR)
+        if not SYSTEM_COLLECTOR.is_file() or not os.access(collector, os.X_OK):
+            resolved = shutil.which("omarchy-agent-usage-opencode")
+            if not resolved:
+                return {}
+            collector = resolved
+        proc = subprocess.run(
+            [collector, "--limits-only"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except Exception:
+        return {}
+    try:
+        raw = proc.stdout
+        if not raw or len(raw) > LIMITS_JSON_MAX_BYTES:
+            return {}
+        return sanitize_collector_limits(json.loads(raw.decode("utf-8")))
+    except Exception:
+        return {}
+
+
+def scan(db_path: Path, now: dt.datetime | None = None, include_limits: bool = True) -> dict[str, Any]:
     now = now or dt.datetime.now()
     today_date = now.date()
     recent_dates = recent_date_strings(now)
     recent = {day: {"date": day, "totalTokens": 0} for day in recent_dates}
 
     if not db_path.exists():
-        return empty_result(now)
+        return empty_result(now, include_limits=include_limits)
 
     try:
         conn = sqlite3.connect(
@@ -343,7 +440,7 @@ def scan(db_path: Path, now: dt.datetime | None = None) -> dict[str, Any]:
         print(f"Error querying opencode db: {exc}", file=sys.stderr)
         return error_result(str(exc))
 
-    return {
+    record = {
         "schemaVersion": 1,
         "scope": "device",
         "scannedAt": int(time.time()),
@@ -356,11 +453,15 @@ def scan(db_path: Path, now: dt.datetime | None = None) -> dict[str, Any]:
         "ready": True,
         "hasLocalStats": True,
     }
+    record.update(
+        fetch_online_limits() if include_limits else empty_limits()
+    )
+    return record
 
 
-def empty_result(now: dt.datetime | None = None) -> dict[str, Any]:
+def empty_result(now: dt.datetime | None = None, include_limits: bool = True) -> dict[str, Any]:
     recent_dates = recent_date_strings(now or dt.datetime.now())
-    return {
+    record = {
         "schemaVersion": 1,
         "scope": "device",
         "scannedAt": int(time.time()),
@@ -373,6 +474,10 @@ def empty_result(now: dt.datetime | None = None) -> dict[str, Any]:
         "ready": True,
         "hasLocalStats": False,
     }
+    record.update(
+        fetch_online_limits() if include_limits else empty_limits()
+    )
+    return record
 
 
 def error_result(message: str, retry_advised: bool = True) -> dict[str, Any]:
@@ -391,10 +496,15 @@ def main() -> int:
     parser.add_argument(
         "db_path", nargs="?", default="~/.local/share/opencode/opencode.db"
     )
+    parser.add_argument(
+        "--no-limits",
+        action="store_true",
+        help="Skip the online Go-plan meters (local stats only).",
+    )
     args = parser.parse_args()
 
     db_path = expand_path(args.db_path)
-    summary = scan(db_path)
+    summary = scan(db_path, include_limits=not args.no_limits)
     print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
     return 0
 
