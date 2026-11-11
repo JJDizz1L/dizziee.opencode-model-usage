@@ -29,6 +29,9 @@ BarWidget {
   readonly property color dim: Qt.darker(foreground, 1.45)
   readonly property color card: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.055)
   readonly property color track: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.24)
+  // Fill strength shared by the meter bars and the history bars below, so
+  // both render the identical brightness from the same theme role.
+  readonly property double barFillAlpha: 0.55
   readonly property string fontFamily: bar ? bar.fontFamily : "JetBrainsMono Nerd Font"
 
   readonly property var provider: usageMain.provider
@@ -841,14 +844,14 @@ BarWidget {
             Layout.fillWidth: true
             Layout.preferredHeight: 6
             radius: Style.cornerRadius
-            color: root.alpha(foreground, 0.05)
+            color: track
             Rectangle {
               anchors.left: parent.left
               anchors.top: parent.top
               anchors.bottom: parent.bottom
               width: parent.width * root.clamp(Number(modelData.percent || 0), 0, 1)
               radius: Style.cornerRadius
-              color: Number(modelData.percent || 0) >= root.limitAlertThreshold ? root.alpha(urgent, 0.8) : root.alpha(foreground, 0.35)
+              color: Number(modelData.percent || 0) >= root.limitAlertThreshold ? root.alpha(urgent, 0.8) : root.alpha(foreground, root.barFillAlpha)
               Behavior on width { NumberAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
             }
           }
@@ -858,7 +861,7 @@ BarWidget {
             text: root.limitResetText(modelData.resetsAt)
             color: root.limitValueColor(modelData.percent)
             font.family: fontFamily
-            font.pixelSize: 10
+            font.pixelSize: 11
           }
         }
       }
@@ -978,7 +981,7 @@ BarWidget {
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
                 width: parent.width * (dayRow.count / weekCard.maxCount)
-                color: dayRow.today ? foreground : root.alpha(foreground, 0.55)
+                color: dayRow.today ? foreground : root.alpha(foreground, root.barFillAlpha)
                 radius: Math.max(1, Style.cornerRadius / 3)
                 Behavior on width { NumberAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
               }
