@@ -246,8 +246,15 @@ BarWidget {
     var seconds = Math.max(0, Math.floor((then - root.nowMs) / 1000))
     var name = raw.split(" ")[0]
     if (name === "Weekly") {
-      var weekDays = Math.ceil(seconds / 86400)
-      return strings.t("opencode.weeklyDays").arg(Commons.I18n.formatNumber(weekDays))
+      var weekHours = Math.ceil(seconds / 3600)
+      if (weekHours < 24)
+        return strings.t("opencode.weeklyHours").arg(Commons.I18n.formatNumber(weekHours))
+      var weekDays = Math.floor(weekHours / 24)
+      var weekRemHours = weekHours % 24
+      if (weekRemHours === 0)
+        return strings.t("opencode.weeklyDays").arg(Commons.I18n.formatNumber(weekDays))
+      return strings.t("opencode.weeklyDaysHours")
+        .arg(Commons.I18n.formatNumber(weekDays)).arg(Commons.I18n.formatNumber(weekRemHours))
     }
     if (name === "Monthly") {
       var monthHours = Math.ceil(seconds / 3600)

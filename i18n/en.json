@@ -50,6 +50,8 @@
   "opencode.rollingHours": "Rolling (%1h)",
   "opencode.rollingHoursMinutes": "Rolling (%1h %2m)",
   "opencode.weeklyDays": "Weekly (%1d)",
+  "opencode.weeklyHours": "Weekly (%1h)",
+  "opencode.weeklyDaysHours": "Weekly (%1d %2h)",
   "opencode.monthlyHours": "Monthly (%1h)",
   "opencode.monthlyDays": "Monthly (%1d)",
   "opencode.monthlyDaysHours": "Monthly (%1d %2h)"
