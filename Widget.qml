@@ -235,32 +235,40 @@ BarWidget {
     return Number(percent || 0) >= root.limitAlertThreshold ? urgent : foreground
   }
 
-  function limitResetText(resetsAt) {
-    if (!resetsAt) return ""
-    var then = Date.parse(String(resetsAt))
-    if (isNaN(then)) return String(resetsAt)
+  // The countdown lives inside the row label ("Rolling (3h 23m)",
+  // "Weekly (4d)", "Monthly (24d 10h)"), computed from resetsAt, so there
+  // is no separate reset line. Unknown labels fall back to the raw text.
+  function limitWindowLabel(window) {
+    if (!window) return ""
+    var raw = String(window.label || "")
+    var then = Date.parse(String(window.resetsAt || ""))
+    if (isNaN(then)) return raw
     var seconds = Math.max(0, Math.floor((then - root.nowMs) / 1000))
-    if (seconds < 60) return strings.t("opencode.resetSoon")
-    var minutes = Math.floor(seconds / 60)
-    if (minutes < 60) return strings.t("opencode.resetMinutes").arg(Commons.I18n.formatNumber(minutes))
-    // Hours alone sit frozen for an hour at a time; pairing them with the
-    // leftover minutes (like the packaged agents panel) keeps the countdown
-    // visibly ticking. Single-unit strings stay as the fallback for
-    // catalogs that have not gained the combined forms yet.
-    var hours = Math.floor(minutes / 60)
-    if (hours < 48) {
-      var remMinutes = minutes % 60
-      if (remMinutes === 0) return strings.t("opencode.resetHours").arg(Commons.I18n.formatNumber(hours))
-      var both = strings.t("opencode.resetHoursMinutes", "")
-      if (both !== "") return both.arg(Commons.I18n.formatNumber(hours)).arg(Commons.I18n.formatNumber(remMinutes))
-      return strings.t("opencode.resetHours").arg(Commons.I18n.formatNumber(hours))
+    var name = raw.split(" ")[0]
+    if (name === "Weekly") {
+      var weekDays = Math.ceil(seconds / 86400)
+      return strings.t("opencode.weeklyDays").arg(Commons.I18n.formatNumber(weekDays))
     }
-    var days = Math.floor(hours / 24)
-    var remHours = hours % 24
-    if (remHours === 0) return strings.t("opencode.resetDays").arg(Commons.I18n.formatNumber(days))
-    var bothDays = strings.t("opencode.resetDaysHours", "")
-    if (bothDays !== "") return bothDays.arg(Commons.I18n.formatNumber(days)).arg(Commons.I18n.formatNumber(remHours))
-    return strings.t("opencode.resetDays").arg(Commons.I18n.formatNumber(days))
+    if (name === "Monthly") {
+      var monthHours = Math.ceil(seconds / 3600)
+      if (monthHours < 24)
+        return strings.t("opencode.monthlyHours").arg(Commons.I18n.formatNumber(monthHours))
+      var monthDays = Math.floor(monthHours / 24)
+      var remHours = monthHours % 24
+      if (remHours === 0)
+        return strings.t("opencode.monthlyDays").arg(Commons.I18n.formatNumber(monthDays))
+      return strings.t("opencode.monthlyDaysHours")
+        .arg(Commons.I18n.formatNumber(monthDays)).arg(Commons.I18n.formatNumber(remHours))
+    }
+    var totalMinutes = Math.ceil(seconds / 60)
+    if (totalMinutes < 60)
+      return strings.t("opencode.rollingMinutes").arg(Commons.I18n.formatNumber(totalMinutes))
+    var hours = Math.floor(totalMinutes / 60)
+    var remMinutes = totalMinutes % 60
+    if (remMinutes === 0)
+      return strings.t("opencode.rollingHours").arg(Commons.I18n.formatNumber(hours))
+    return strings.t("opencode.rollingHoursMinutes")
+      .arg(Commons.I18n.formatNumber(hours)).arg(Commons.I18n.formatNumber(remMinutes))
   }
 
   function limitsTitle() {
@@ -824,12 +832,12 @@ BarWidget {
             spacing: 8
             Text {
               textFormat: Text.PlainText
-              text: String(modelData.label || "")
+              text: root.limitWindowLabel(modelData)
               color: root.limitValueColor(modelData.percent)
               font.family: fontFamily
               font.pixelSize: 11
               elide: Text.ElideRight
-              Layout.preferredWidth: 92
+              Layout.preferredWidth: 128
             }
             Rectangle {
               Layout.fillWidth: true
@@ -856,14 +864,6 @@ BarWidget {
               horizontalAlignment: Text.AlignRight
               Layout.preferredWidth: 40
             }
-          }
-          Text {
-            textFormat: Text.PlainText
-            visible: root.limitResetText(modelData.resetsAt) !== ""
-            text: root.limitResetText(modelData.resetsAt)
-            color: root.limitValueColor(modelData.percent)
-            font.family: fontFamily
-            font.pixelSize: 10
           }
         }
       }

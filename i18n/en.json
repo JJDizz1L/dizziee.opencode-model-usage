@@ -46,10 +46,11 @@
   "opencode.goPlan": "OpenCode %1",
   "opencode.goPlanDefault": "OpenCode Plan",
   "opencode.limitsStale": "Stale · showing the last good meters",
-  "opencode.resetSoon": "Resets soon",
-  "opencode.resetMinutes": "Resets in %1m",
-  "opencode.resetHours": "Resets in %1h",
-  "opencode.resetHoursMinutes": "Resets in %1h %2m",
-  "opencode.resetDays": "Resets in %1d",
-  "opencode.resetDaysHours": "Resets in %1d %2h"
+  "opencode.rollingMinutes": "Rolling (%1m)",
+  "opencode.rollingHours": "Rolling (%1h)",
+  "opencode.rollingHoursMinutes": "Rolling (%1h %2m)",
+  "opencode.weeklyDays": "Weekly (%1d)",
+  "opencode.monthlyHours": "Monthly (%1h)",
+  "opencode.monthlyDays": "Monthly (%1d)",
+  "opencode.monthlyDaysHours": "Monthly (%1d %2h)"
 }
