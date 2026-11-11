@@ -222,6 +222,16 @@ BarWidget {
     return Commons.I18n.formatNumber(Math.round(Number(percent || 0) * 100)) + "%"
   }
 
+  // Single source of truth for the meter value color: the percentages, the
+  // labels, the reset lines, and the card title all resolve through here,
+  // so they stay identical in every theme and state. No color is named.
+  // The bar fill keys off the same threshold property, so the alert point
+  // lives in exactly one place.
+  readonly property double limitAlertThreshold: 0.9
+  function limitValueColor(percent) {
+    return Number(percent || 0) >= root.limitAlertThreshold ? urgent : foreground
+  }
+
   function limitResetText(resetsAt) {
     if (!resetsAt) return ""
     var then = Date.parse(String(resetsAt))
@@ -785,6 +795,16 @@ BarWidget {
     property var provider: null
     visible: !!provider && provider.limits && provider.limits.length > 0
     title: root.limitsTitle()
+    // The card title follows the same meter color as the percentages,
+    // driven by the hottest window, so header and values never diverge.
+    readonly property double peakPercent: {
+      var peak = 0
+      var windows = limitsCard.provider ? (limitsCard.provider.limits || []) : []
+      for (var i = 0; i < windows.length; i++)
+        peak = Math.max(peak, Number(windows[i] ? windows[i].percent : 0) || 0)
+      return peak
+    }
+    titleColor: root.limitValueColor(limitsCard.peakPercent)
     subtitle: provider && provider.limitsStale ? strings.t("opencode.limitsStale") : ""
 
     ColumnLayout {
@@ -802,7 +822,7 @@ BarWidget {
             Text {
               textFormat: Text.PlainText
               text: String(modelData.label || "")
-              color: dim
+              color: root.limitValueColor(modelData.percent)
               font.family: fontFamily
               font.pixelSize: 11
               elide: Text.ElideRight
@@ -811,7 +831,7 @@ BarWidget {
             Text {
               textFormat: Text.PlainText
               text: root.limitPercentText(modelData.percent)
-              color: Number(modelData.percent || 0) >= 0.9 ? urgent : foreground
+              color: root.limitValueColor(modelData.percent)
               font.family: fontFamily
               font.pixelSize: 11
               font.bold: true
@@ -828,7 +848,7 @@ BarWidget {
               anchors.bottom: parent.bottom
               width: parent.width * root.clamp(Number(modelData.percent || 0), 0, 1)
               radius: Style.cornerRadius
-              color: Number(modelData.percent || 0) >= 0.9 ? root.alpha(urgent, 0.8) : root.alpha(foreground, 0.35)
+              color: Number(modelData.percent || 0) >= root.limitAlertThreshold ? root.alpha(urgent, 0.8) : root.alpha(foreground, 0.35)
               Behavior on width { NumberAnimation { duration: Style.duration(160); easing.type: Easing.OutCubic } }
             }
           }
@@ -836,7 +856,7 @@ BarWidget {
             textFormat: Text.PlainText
             visible: root.limitResetText(modelData.resetsAt) !== ""
             text: root.limitResetText(modelData.resetsAt)
-            color: dim
+            color: root.limitValueColor(modelData.percent)
             font.family: fontFamily
             font.pixelSize: 10
           }
