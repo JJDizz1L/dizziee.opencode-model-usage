@@ -1,6 +1,6 @@
 # dizziee.opencode-model-usage
 
-OpenCode token usage stats in the Omarchy bar. Displays today, weekly, and all-time token counts per model.
+OpenCode token usage stats in the Omarchy bar. Displays today, weekly, and all-time token counts per model, plus the OpenCode plan's rolling, weekly, and monthly meters with live countdowns.
 
 ## Requirements
 
@@ -57,7 +57,9 @@ A background tick only starts Python when the cached snapshot is older than 90% 
 
 ## Online plan meters (zero setup)
 
-Each scan also asks the packaged `omarchy.agents` collector (`omarchy-agent-usage-opencode --limits-only`) for its secret-free record and merges only the display fields: `limits` (rolling 5h / weekly / monthly percent + reset time), `tierLabel` (e.g. `Go`), `limitsStale`, and the status/help texts. Credential discovery stays inside that collector (env keys → opencode's credential store → `auth.json` files → Console session), so this plugin never reads, logs, or caches any API key or token — the panel shows the same meters as the agents panel with nothing to configure. A machine with no Go plan, or no collector installed, simply shows local stats; pass `--no-limits` to the scanner for local-only output.
+Each scan also asks the packaged `omarchy.agents` collector (`omarchy-agent-usage-opencode --limits-only`) for its secret-free record and merges only the display fields: `limits` (rolling / weekly / monthly percent + reset time), `tierLabel` (e.g. `Go`), `limitsStale`, and the status/help texts. Credential discovery stays inside that collector (env keys → opencode's credential store → `auth.json` files → Console session), so this plugin never reads, logs, or caches any API key or token — the panel shows the same meters as the agents panel with nothing to configure. A machine with no Go plan, or no collector installed, simply shows local stats; pass `--no-limits` to the scanner for local-only output.
+
+Each meter row pairs its bar with the live countdown folded into the label — `Rolling (40m)`, `Rolling (4h)`, `Rolling (3h 23m)`, `Weekly (4d 5h)`, `Monthly (27d)`, `Monthly (24d 10h)` — using the same bar treatment as the Last 7 Days card. A window at 90% or more turns urgent, and the card title follows the hottest window.
 
 The meters are cheap (the collector owns its own per-credential cache), so they refresh on a faster lane than the sqlite scan: every `min(180, refreshIntervalSec)` seconds the scanner runs with `--limits-only`, which reuses the cached local stats and only renews the meters — mirroring the packaged agents panel's limits-only cadence. `scannedAt` is left untouched so the full-scan schedule is unaffected, and a failed fetch keeps the last good meters.
 
@@ -67,7 +69,7 @@ The scanner opens OpenCode's SQLite database read-only and extracts only the mod
 
 The last successful result is cached at `~/.cache/omarchy/dizziee.opencode-model-usage.json`. That file is the compact aggregate the panel draws — currently about 4 KB, hard-capped at 128 KB — never messages or a database copy. The cache lets the bar paint immediately at shell start without spawning Python, and every bar instance watches it so one scan reaches every monitor. A failed scan leaves the cache and the displayed numbers alone and starts retrying after 30 seconds, backing off to five minutes; the panel marks the numbers stale and shows the last good result.
 
-No network access is used.
+The plugin itself makes no network requests: per-model stats come from the local database, and the online meters arrive via the packaged collector's cached record (the only component that talks to OpenCode's usage endpoint).
 
 ## Translations
 
