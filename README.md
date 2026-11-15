@@ -65,7 +65,18 @@ The meters are cheap (the collector owns its own per-credential cache), so they 
 
 ## Data and cache
 
-The scanner opens OpenCode's SQLite database read-only and extracts only the model and token fields it needs for aggregate counts. It never copies the database, and message text is never stored or shown. The time window is index-backed and the grouping projection is materialised in memory, so a scan does not spill a temporary file to disk.
+Tokens are counted from every client on this machine that spent the subscription — not just the opencode CLI:
+
+| Client | Store | Read |
+|---|---|---|
+| opencode v2 | `~/.local/share/opencode/opencode.db` | `session` aggregates (all-time) + `session_message` tokens (day split) |
+| omp / pi | `~/.pi/agent/sessions`, `~/.omp/agent/sessions` (plus `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`, profiles) | JSONL `message.usage` on assistant messages |
+| opencode v1 forks | `~/.local/share/opencode*/*.db` | legacy flat `message` table |
+| Hermes | `$HERMES_HOME/state.db`, `~/.hermes/state.db`, `~/.hermes/profiles/*/state.db` | `sessions` token columns |
+
+Only the subscription's own provider ids (`opencode`, `opencode-go`) count, so a Claude or Codex run through the same client — or a custom `opencode-local` gateway — stays out. Shared models merge into one row under the same `id (provider)` key. Each source is read in isolation: one broken store degrades to the rest, never to a failed scan.
+
+The scanner opens SQLite databases read-only and extracts only the model and token fields it needs for aggregate counts. It never copies a database, and message text is never stored or shown. The time window is index-backed and the grouping projection is materialised in memory, so a scan does not spill a temporary file to disk.
 
 The last successful result is cached at `~/.cache/omarchy/dizziee.opencode-model-usage.json`. That file is the compact aggregate the panel draws — currently about 4 KB, hard-capped at 128 KB — never messages or a database copy. The cache lets the bar paint immediately at shell start without spawning Python, and every bar instance watches it so one scan reaches every monitor. A failed scan leaves the cache and the displayed numbers alone and starts retrying after 30 seconds, backing off to five minutes; the panel marks the numbers stale and shows the last good result.
 

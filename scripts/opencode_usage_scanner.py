@@ -186,6 +186,9 @@ def scan_day_stats_from_messages(
     today_tokens_by_model: dict[str, int] = {}
     today_total_tokens = 0
     for row in cursor.fetchall():
+        prov = row["prov"]
+        if prov and not is_opencode_provider(str(prov)):
+            continue
         day = row["day"]
         if day in recent:
             recent[day]["totalTokens"] += row["toks"]
@@ -197,12 +200,14 @@ def scan_day_stats_from_messages(
             today_total_tokens += row["toks"]
     cursor.execute(
         f"""WITH recent AS {materialized} (
-                SELECT session_id, ({MESSAGE_TOKENS}) AS toks
+                SELECT session_id, ({prov_expr}) AS prov, ({MESSAGE_TOKENS}) AS toks
                 FROM {table}
                 WHERE {today_filter}
             )
             SELECT COUNT(*) FROM (
-                SELECT session_id FROM recent WHERE toks>0 GROUP BY session_id
+                SELECT session_id FROM recent WHERE toks>0
+                AND (prov IS NULL OR prov = '' OR prov IN ('opencode', 'opencode-go'))
+                GROUP BY session_id
             )
         """,
         (today_start_s * 1000, today_end_s * 1000, today_start_s, today_end_s),
@@ -266,6 +271,325 @@ def empty_limits() -> dict[str, Any]:
     }
 
 
+# ------------------------------------------------------------------ clients
+# Only the subscription's own provider ids count. A Claude or Codex run
+# through the same client, or a custom "opencode-local" gateway, is someone
+# else's record — exact match, never a prefix, so "opencode-local" stays out.
+OPENCODE_PROVIDERS = ("opencode", "opencode-go")
+
+# Forks and transcripts are small; the main database keeps its index-backed
+# SQL path. Python-side parsing stops here instead of reading a runaway file.
+MAX_EXTRA_ROWS = 200_000
+MAX_ENTRY_BYTES = 1 << 20
+
+
+def is_opencode_provider(value: Any) -> bool:
+    return isinstance(value, str) and value in OPENCODE_PROVIDERS
+
+
+def provider_of_session_model(raw: Any) -> str:
+    """Provider id behind a session-table model value, or "" when unknown.
+
+    Plain-string models predate provider tracking; they stay (the store is
+    opencode's own), while a known foreign provider is filtered out.
+    """
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return ""
+        if isinstance(parsed, dict):
+            provider = parsed.get("providerID")
+            return str(provider) if isinstance(provider, str) else ""
+    return ""
+
+
+def day_from_value(value: Any) -> str:
+    """Local date for epoch-ms, epoch-s, or ISO timestamps; today when unusable."""
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return dt.datetime.now().strftime("%Y-%m-%d")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone().strftime("%Y-%m-%d")
+    if isinstance(value, (int, float)) and value > 0:
+        seconds = value / 1000.0 if value > 10_000_000_000 else float(value)
+        try:
+            return dt.datetime.fromtimestamp(seconds).strftime("%Y-%m-%d")
+        except (OSError, OverflowError, ValueError):
+            pass
+    return dt.datetime.now().strftime("%Y-%m-%d")
+
+
+def pi_session_dirs() -> list[Path]:
+    roots: list[Path] = []
+    bases = [Path.home() / ".pi" / "agent", Path.home() / ".omp" / "agent"]
+    configured = os.environ.get("PI_CODING_AGENT_DIR", "").strip()
+    if configured:
+        bases.append(Path(os.path.expanduser(configured)))
+    for base in bases:
+        roots.append(base / "sessions")
+        profiles = base / "profiles"
+        try:
+            if profiles.is_dir():
+                roots.extend(sorted(p for p in profiles.glob("*/sessions") if p.is_dir()))
+        except OSError:
+            continue
+    configured_sessions = os.environ.get("PI_CODING_AGENT_SESSION_DIR", "").strip()
+    if configured_sessions:
+        roots.append(Path(os.path.expanduser(configured_sessions)))
+    seen: set[str] = set()
+    ordered: list[Path] = []
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            ordered.append(root)
+    return ordered
+
+
+def scan_pi_jsonl() -> list[tuple]:
+    """omp/pi transcripts: usage on assistant messages, one row per line."""
+    rows: list[tuple] = []
+    seen: set[str] = set()
+    for root in pi_session_dirs():
+        try:
+            if not root.is_dir():
+                continue
+            paths = sorted(root.rglob("*.jsonl"))
+        except OSError:
+            continue
+        for path in paths:
+            try:
+                handle = path.open("r", encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            with handle:
+                for number, line in enumerate(handle, 1):
+                    if len(rows) >= MAX_EXTRA_ROWS:
+                        return rows
+                    if '"usage"' not in line or '"assistant"' not in line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(entry, dict) or entry.get("type") != "message":
+                        continue
+                    message = entry.get("message")
+                    if not isinstance(message, dict) or message.get("role") != "assistant":
+                        continue
+                    if not is_opencode_provider(message.get("provider")):
+                        continue
+                    identity = f"{path}:{entry.get('id') or number}"
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    usage = message.get("usage")
+                    if not isinstance(usage, dict):
+                        continue
+                    try:
+                        tokens = {
+                            "input": int(usage.get("input") or 0),
+                            "output": int(usage.get("output") or 0),
+                            "cacheRead": int(usage.get("cacheRead") or 0),
+                            "cacheWrite": int(usage.get("cacheWrite") or 0),
+                        }
+                        total = int(usage.get("totalTokens") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if total <= 0:
+                        total = tokens["input"] + tokens["output"] + tokens["cacheRead"] + tokens["cacheWrite"]
+                    if total <= 0:
+                        continue
+                    model = normalize_model_parts(message.get("model"), message.get("provider"))
+                    day = day_from_value(entry.get("timestamp") or message.get("timestamp"))
+                    rows.append((model, day, str(path), tokens["input"], tokens["output"],
+                                 tokens["cacheRead"], tokens["cacheWrite"]))
+    return rows
+
+
+def scan_hermes() -> list[tuple]:
+    """Hermes' own runs on the subscription, from state.db (plus profiles)."""
+    rows: list[tuple] = []
+    home = Path(os.environ.get("HERMES_HOME", "").strip() or (Path.home() / ".hermes"))
+    candidates = [home / "state.db"]
+    profiles = home / "profiles"
+    try:
+        if profiles.is_dir():
+            candidates.extend(sorted(profiles.glob("*/state.db")))
+    except OSError:
+        pass
+    for db in candidates:
+        if not db.is_file() or len(rows) >= MAX_EXTRA_ROWS:
+            continue
+        try:
+            conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=3)
+        except (OSError, sqlite3.Error):
+            continue
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            found = conn.execute(
+                "SELECT id, model, billing_provider, started_at, input_tokens,"
+                " output_tokens, cache_read_tokens, cache_write_tokens,"
+                " reasoning_tokens FROM sessions LIMIT ?",
+                (MAX_EXTRA_ROWS - len(rows),),
+            ).fetchall()
+        except sqlite3.Error:
+            continue
+        finally:
+            conn.close()
+        for (sid, model, provider, started, inp, out, cache_read, cache_write, reasoning) in found:
+            if len(rows) >= MAX_EXTRA_ROWS:
+                break
+            if not is_opencode_provider(provider):
+                continue
+            try:
+                out_total = int(out or 0) + int(reasoning or 0)
+                entry = (normalize_model_parts(model, provider), day_from_value(started),
+                         f"hermes:{db.parent.name}:{sid}", int(inp or 0), out_total,
+                         int(cache_read or 0), int(cache_write or 0))
+            except (TypeError, ValueError):
+                continue
+            if sum(entry[3:]) > 0:
+                rows.append(entry)
+    return rows
+
+
+def scan_v1_forks(main_db: Path) -> list[tuple]:
+    """Legacy flat `message` tables in opencode fork databases (crew et al)."""
+    rows: list[tuple] = []
+    try:
+        data_home = main_db.resolve().parent.parent
+    except Exception:
+        return rows
+    try:
+        dbs = sorted(data_home.glob("opencode*/*.db"))
+    except OSError:
+        return rows
+    for db in dbs:
+        if len(rows) >= MAX_EXTRA_ROWS:
+            break
+        try:
+            if db.resolve() == main_db.resolve():
+                continue
+        except OSError:
+            continue
+        if not db.is_file():
+            continue
+        try:
+            conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=3)
+        except (OSError, sqlite3.Error):
+            continue
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message'")}
+            if "message" not in tables:
+                continue
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(message)")}
+            if not {"session_id", "data"} <= cols:
+                continue
+            found = conn.execute(
+                "SELECT session_id, data FROM message LIMIT ?",
+                (MAX_EXTRA_ROWS - len(rows),)).fetchall()
+        except sqlite3.Error:
+            continue
+        finally:
+            conn.close()
+        for session_id, raw in found:
+            if not isinstance(raw, str) or len(raw) > MAX_ENTRY_BYTES:
+                continue
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            model = entry.get("model")
+            if not isinstance(model, dict):
+                model = {}
+            provider = model.get("providerID") or entry.get("providerID") or ""
+            if not is_opencode_provider(provider):
+                continue
+            model_id = model.get("id") or entry.get("modelID") or ""
+            tokens = entry.get("tokens")
+            if not isinstance(tokens, dict):
+                tokens = {}
+            cache = tokens.get("cache")
+            if not isinstance(cache, dict):
+                cache = {}
+            try:
+                inp = int(tokens.get("input") or 0)
+                out = int(tokens.get("output") or 0) + int(tokens.get("reasoning") or 0)
+                cache_read = int(cache.get("read") or 0)
+                cache_write = int(cache.get("write") or 0)
+            except (TypeError, ValueError):
+                continue
+            if inp + out + cache_read + cache_write <= 0:
+                continue
+            created = entry.get("time")
+            if not isinstance(created, dict):
+                created = {}
+            rows.append((normalize_model_parts(model_id, provider),
+                         day_from_value(created.get("created")),
+                         f"{db.name}:{session_id}", inp, out, cache_read, cache_write))
+    return rows
+
+
+def collect_extra_rows(db_path: Path) -> list[tuple]:
+    """Token rows from every other client, each source isolated: one broken
+    store degrades to the rest, never to a failed scan."""
+    rows: list[tuple] = []
+    for name, fn in (("pi", scan_pi_jsonl), ("hermes", scan_hermes),
+                     ("v1", lambda: scan_v1_forks(db_path))):
+        try:
+            rows.extend(fn())
+        except Exception as exc:
+            print(f"opencode usage: {name}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    return rows
+
+
+def apply_extra_rows(record: dict[str, Any], rows: list[tuple], today_str: str) -> dict[str, Any]:
+    """Fold other-client rows into a record using the same shape and model
+    keys ("id (provider)") the opencode.db scan emits, so shared models merge
+    into one row instead of one row per client."""
+    if not rows:
+        return record
+    day_map = {d.get("date"): d for d in record.get("recentDays", []) if isinstance(d, dict)}
+    usage = record.setdefault("modelUsage", {})
+    by_model = record.setdefault("todayTokensByModel", {})
+    sessions: set[str] = set()
+    today_sessions: set[str] = set()
+    for model_key, day, session, inp, out, cache_read, cache_write in rows:
+        total = inp + out + cache_read + cache_write
+        if total <= 0:
+            continue
+        bucket = usage.setdefault(model_key, {"inputTokens": 0, "outputTokens": 0,
+                                              "cacheReadInputTokens": 0,
+                                              "cacheCreationInputTokens": 0})
+        bucket["inputTokens"] += inp
+        bucket["outputTokens"] += out
+        bucket["cacheReadInputTokens"] += cache_read
+        bucket["cacheCreationInputTokens"] += cache_write
+        if session:
+            sessions.add(session)
+        if day in day_map:
+            day_map[day]["totalTokens"] += total
+        if day == today_str:
+            by_model[model_key] = by_model.get(model_key, 0) + total
+            record["todayTotalTokens"] = record.get("todayTotalTokens", 0) + total
+            if session:
+                today_sessions.add(session)
+    record["totalSessions"] = record.get("totalSessions", 0) + len(sessions)
+    record["todaySessions"] = record.get("todaySessions", 0) + len(today_sessions)
+    if sessions:
+        record["hasLocalStats"] = True
+    return record
+
+
 def fetch_online_limits(timeout: float = 8) -> dict[str, Any]:
     """Ask the packaged collector for its secret-free limits record.
 
@@ -305,7 +629,11 @@ def scan(db_path: Path, now: dt.datetime | None = None, include_limits: bool = T
     recent = {day: {"date": day, "totalTokens": 0} for day in recent_dates}
 
     if not db_path.exists():
-        return empty_result(now, include_limits=include_limits)
+        # No opencode database, but other clients may still hold spend.
+        rec = empty_result(now, include_limits=False)
+        apply_extra_rows(rec, collect_extra_rows(db_path), date_string((now or dt.datetime.now()).date()))
+        rec.update(fetch_online_limits() if include_limits else empty_limits())
+        return rec
 
     try:
         conn = sqlite3.connect(
@@ -350,6 +678,9 @@ def scan(db_path: Path, now: dt.datetime | None = None, include_limits: bool = T
         model_usage: dict[str, dict[str, int]] = {}
         total_sessions = 0
         for row in cursor:
+            provider = provider_of_session_model(row["model"])
+            if provider and not is_opencode_provider(provider):
+                continue
             model = normalize_model(row["model"])
             total_sessions += row["totalSessions"]
             bucket = model_usage.get(model)
@@ -403,6 +734,9 @@ def scan(db_path: Path, now: dt.datetime | None = None, include_limits: bool = T
             today_total_tokens = 0
             today_sessions = 0
             for row in cursor:
+                provider = provider_of_session_model(row["model"])
+                if provider and not is_opencode_provider(provider):
+                    continue
                 model = normalize_model(row["model"])
                 row_tokens = row["totalTokens"]
                 today_sessions += row["sessions"]
@@ -453,6 +787,10 @@ def scan(db_path: Path, now: dt.datetime | None = None, include_limits: bool = T
         "ready": True,
         "hasLocalStats": True,
     }
+    # Spend from every other client on the subscription: omp/pi transcripts,
+    # Hermes runs, and legacy fork databases. Same keys, so shared models
+    # merge into one row instead of one row per client.
+    apply_extra_rows(record, collect_extra_rows(db_path), date_string(today_date))
     record.update(
         fetch_online_limits() if include_limits else empty_limits()
     )
